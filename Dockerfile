@@ -11,3 +11,5 @@ ENV LANG ja_JP.utf8
 ENV TZ=Asia/Tokyo
 
 WORKDIR /app
+COPY . /app
+CMD ["sh", "run.sh"]

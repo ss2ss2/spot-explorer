@@ -1,3 +1,4 @@
 node_modules/
 *.log
-.env
+.envpublic/javascripts/bundle.js
+public/stylesheets/bundle.css
