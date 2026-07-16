@@ -2,7 +2,7 @@ const { html } = require('hono/html');
 
 function layout(c, title, body) {
   const { user } = c.get('session') ?? {};
-  title = title ? `${title} - 予定調整くん` : '予定調整くん';
+  title = title ? `${title} - グルメ＆スポットアプリ` : 'グルメ＆スポットアプリ';
   return html`
     <!doctype html>
     <html>
@@ -16,7 +16,7 @@ function layout(c, title, body) {
       <body>
         <nav class="navbar navbar-expand-md navbar-light bg-light">
           <div class="container-fluid">
-            <a class="navbar-brand" href="/">予定調整くん</a>
+            <a class="navbar-brand fw-bold" style="color: #0d6efd; text-decoration: none;" href="/">グルメ＆スポットアプリ</a>
             <button
               class="navbar-toggler"
               type="button"

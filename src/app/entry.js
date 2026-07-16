@@ -22,11 +22,11 @@ $('.availability-toggle-button').each((i, e) => {
       .then((response) => response.json())
       .then((data) => {
         button.data('availability', data.availability);
-        const availabilityLabels = ['欠', '？', '出'];
+        const availabilityLabels = ['❓', '🔥 行きたい', '⭐ 行ったことある'];
         button.text(availabilityLabels[data.availability]);
         
-        const buttonStyles = ['btn-danger', 'btn-secondary', 'btn-success'];
-        button.removeClass('btn-danger btn-secondary btn-success');
+        const buttonStyles = ['btn-info', 'btn-primary', 'btn-success'];
+        button.removeClass('btn-info btn-primary btn-success btn-danger btn-secondary'); // 念のため古い色もリセット対象に含めておく
         button.addClass(buttonStyles[data.availability]);
       });
   });
@@ -36,7 +36,7 @@ const buttonSelfComment = $('#self-comment-button');
 buttonSelfComment.on('click', () => {
   const scheduleId = buttonSelfComment.data('schedule-id');
   const userId = buttonSelfComment.data('user-id');
-  const comment = prompt('コメントを255文字以内で入力してください。');
+  const comment = prompt('一口メモや食べたいメニューを入力してください。');
   if (comment) {
     fetch(`/schedules/${scheduleId}/users/${userId}/comments`, {
       method: 'POST',

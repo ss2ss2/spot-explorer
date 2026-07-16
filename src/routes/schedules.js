@@ -10,390 +10,272 @@ const { zValidator } = require('@hono/zod-validator');
 const { HTTPException } = require('hono/http-exception');
 
 const app = new Hono();
-
 app.use(ensureAuthenticated());
 
-const scheduleIdValidator = zValidator(
-  'param',
-  z.object({
-    scheduleId: z.string().uuid(),
-  }),
-  (result) => {
-    if (!result.success) {
-      throw new HTTPException(400, { message: 'URL の形式が正しくありません。' });
-    }
-  }
-);
+const scheduleIdValidator = zValidator('param', z.object({ scheduleId: z.string().uuid() }), (result) => {
+  if (!result.success) throw new HTTPException(400, { message: 'URL の形式が正しくありません。' });
+});
 
-const scheduleFormValidator = zValidator(
-  'form',
-  z.object({
-    scheduleName: z.string(),
-    memo: z.string(),
-    candidates: z.string(),
-  }),
-  (result) => {
-    if (!result.success) {
-      throw new HTTPException(400, { message: '入力された情報が不十分または正しくありません' });
-    }
-  }
-);
-async function createCandidates(candidateNames, scheduleId) {
-  const candidates = candidateNames.map((candidateName) => ({
-    candidateName,
-    scheduleId,
-  }));
-  await prisma.candidate.createMany({
-    data: candidates,
-  });
+const scheduleFormValidator = zValidator('form', z.object({
+  scheduleName: z.string(),
+  memo: z.string(),
+  candidates: z.string(),
+}), (result) => {
+  if (!result.success) throw new HTTPException(400, { message: '入力された情報が不十分または正しくありません' });
+});
+
+async function createCandidates(candidatesData, scheduleId) {
+  const candidates = candidatesData.map((data) => ({ candidateName: data.candidateName, url: data.url, scheduleId }));
+  await prisma.candidate.createMany({ data: candidates });
 }
 
 function parseCandidateNames(candidatesStr) {
-  return candidatesStr
-    .split('\n')
-    .map((s) => s.trim())
-    .filter((s) => s !== '');
+  return candidatesStr.split('\n').map((s) => s.trim()).filter((s) => s !== '' && s.split(/[,，、]/)[0].trim() !== '').map((line) => {
+    const [name, url] = line.split(/[,，、]/).map((s) => s.trim());
+    return { candidateName: name, url: url || null };
+  });
 }
 
-app.get('/new', (c) => {
-  return c.html(
-    layout(
-      c,
-      '予定の作成',
-      html`
-        <form method="post" action="/schedules" class="my-3">
-          <div class="mb-3">
-            <label class="form-label">予定名</label>
-            <input type="text" name="scheduleName" class="form-control" />
-          </div>
-          <div class="mb-3">
-            <label class="form-label">メモ</label>
-            <textarea name="memo" class="form-control"></textarea>
-          </div>
-          <div class="mb-3">
-            <label class="form-label">
-              候補日程 (改行して複数入力してください)
-            </label>
-            <textarea name="candidates" class="form-control"></textarea>
-          </div>
-          <button class="btn btn-primary" type="submit">予定をつくる</button>
-        </form>
-      `,
-    ),
-  );
-});
+function isMine(userId, schedule) { return schedule && parseInt(schedule.createdBy, 10) === parseInt(userId, 10); }
+
+app.get('/new', (c) => c.html(layout(c, '', html`
+  <form method="post" action="/schedules" class="my-3">
+    <div class="mb-3"><label class="form-label">テーマ名</label><input type="text" name="scheduleName" class="form-control" /></div>
+    <div class="mb-3"><label class="form-label">メモ</label><textarea name="memo" class="form-control"></textarea></div>
+    <div class="mb-3">
+      <label class="form-label">候補スポット（店名, 共有リンクURL）</label>
+      <textarea name="candidates" class="form-control" rows="4" placeholder="例：〇〇イタリアン、https://maps... （「,」や「、」でつなぐ）&#13;※複数ある場合は1行に1店ずつ改行して入力してください"></textarea></div>
+    <button class="btn btn-primary" type="submit">作成</button>
+  </form>
+`)));
 
 app.post('/', scheduleFormValidator, async (c) => {
   const { user } = c.get('session') ?? {};
   const body = c.req.valid('form');
 
-  // 予定を登録
-  const { scheduleId } = await prisma.schedule.create({
-    data: {
-      scheduleId: randomUUID(),
-      scheduleName: body.scheduleName.slice(0, 255) || '（名称未設定）',
-      memo: body.memo,
-      createdBy: user.id,
-      updatedAt: new Date(),
-    },
+  // もしデータベースの名簿に自分が無ければ、自動で登録（復活）させる
+  const username = user.username || user.login || user.name || 'shin';
+  await prisma.user.upsert({
+    where: { userId: parseInt(user.id, 10) },
+    update: { username: username },
+    create: { userId: parseInt(user.id, 10), username: username }, 
   });
 
-  // 候補日程を登録
+  const { scheduleId } = await prisma.schedule.create({
+    data: { scheduleId: randomUUID(), scheduleName: body.scheduleName || '（名称未設定）', memo: body.memo, createdBy: user.id, updatedAt: new Date() },
+  });
   const candidateNames = parseCandidateNames(body.candidates);
   await createCandidates(candidateNames, scheduleId);
-
-  // 作成した予定のページにリダイレクト
-  return c.redirect('/schedules/' + scheduleId);
+  return c.redirect('/');
 });
 
 app.get('/:scheduleId', scheduleIdValidator, async (c) => {
   const { user } = c.get('session') ?? {};
-  const schedule = await prisma.schedule.findUnique({
-    where: { scheduleId: c.req.valid('param').scheduleId },
-    include: {
-      user: {
-        select: {
-          userId: true,
-          username: true,
-        },
-      },
-    },
-  });
+  const schedule = await prisma.schedule.findUnique({ where: { scheduleId: c.req.valid('param').scheduleId }, include: { user: { select: { userId: true, username: true } } } });
+  if (!schedule) return c.notFound();
 
-  if (!schedule) {
-    return c.notFound();
-  }
-
-  const candidates = await prisma.candidate.findMany({
+  const candidates = await prisma.candidate.findMany({ where: { scheduleId: schedule.scheduleId }, orderBy: { candidateId: 'asc' } });
+  const availabilities = await prisma.availability.findMany({ where: { scheduleId: schedule.scheduleId }, include: { user: { select: { userId: true, username: true } } } });
+  
+  const comments = await prisma.comment.findMany({ 
     where: { scheduleId: schedule.scheduleId },
-    orderBy: { candidateId: 'asc' },
+    include: { user: { select: { userId: true, username: true } } },
+    orderBy: { createdAt: 'desc' }
   });
 
-  // データベースからその予定のすべての出欠を取得する
-  const availabilities = await prisma.availability.findMany({
-    where: { scheduleId: schedule.scheduleId },
-    orderBy: { candidateId: 'asc' },
-    include: {
-      user: {
-        select: {
-          userId: true,
-          username: true,
-        },
-      },
-    },
-  });
-  // 出欠 MapMap を作成する
-  const availabilityMapMap = new Map(); // key: userId, value: Map(key: candidateId, value: availability)
+  const availabilityMapMap = new Map();
   availabilities.forEach((a) => {
     const map = availabilityMapMap.get(a.user.userId) || new Map();
     map.set(a.candidateId, a.availability);
     availabilityMapMap.set(a.user.userId, map);
   });
 
-  // 閲覧ユーザと出欠に紐づくユーザからユーザ Map を作る
-  const userMap = new Map(); // key: userId, value: User
-  userMap.set(parseInt(user.id, 10), {
-    isSelf: true,
-    userId: parseInt(user.id, 10),
-    username: user.username,
-  });
-  availabilities.forEach((a) => {
-    userMap.set(a.user.userId, {
-      isSelf: parseInt(user.id, 10) === a.user.userId, // 閲覧ユーザ自身であるかを示す真偽値
-      userId: a.user.userId,
-      username: a.user.username,
-    });
-  });
+  const userMap = new Map();
+  userMap.set(parseInt(user.id, 10), { isSelf: true, userId: parseInt(user.id, 10), username: user.username });
+  availabilities.forEach((a) => userMap.set(a.user.userId, { isSelf: parseInt(user.id, 10) === a.user.userId, userId: a.user.userId, username: a.user.username }));
 
-  // 全ユーザ、全候補で二重ループしてそれぞれの出欠の値がない場合には、「欠席」を設定する
   const users = Array.from(userMap.values());
-  users.forEach((u) => {
-    candidates.forEach((c) => {
-      const map = availabilityMapMap.get(u.userId) || new Map();
-      const a = map.get(c.candidateId) || 0; // デフォルト値は 0 を使用
-      map.set(c.candidateId, a);
-      availabilityMapMap.set(u.userId, map);
-    });
-  });
+  const buttonStyles = ['btn-info', 'btn-primary', 'btn-success'];
+  const labels = ['❓', '🔥 行きたい', '⭐ 行ったことある'];
 
-  // コメント取得
-  const comments = await prisma.comment.findMany({
-    where: { scheduleId: schedule.scheduleId },
-  });
-  const commentMap = new Map(); // key: userId, value: comment
-  comments.forEach((comment) => {
-    commentMap.set(comment.userId, comment.comment);
-  });
-
-  const buttonStyles = ['btn-danger', 'btn-secondary', 'btn-success'];
-
-  return c.html(
-    layout(
-      c,
-      `予定: ${schedule.scheduleName}`,
-      html`
-        <div class="card my-3">
-          <h4 class="card-header">${schedule.scheduleName}</h4>
-          <div class="card-body">
-            <p style="white-space: pre;">${schedule.memo}</p>
-          </div>
-          <div class="card-footer">作成者: ${schedule.user.username}</div>
-        </div>
-        ${isMine(user.id, schedule)
-          ? html`
-              <a
-                href="/schedules/${schedule.scheduleId}/edit"
-                class="btn btn-primary"
-              >
-                この予定を編集する <i class="bi bi-pencil"></i>
-              </a>`
-          : ''}
-        <h3 class="my-3">出欠表</h3>
-        <div class="table-responsive">
-        <table class="table table-bordered">
-            <tr>
-              <th>予定</th>
-              ${users.map((user) => html`<th>${user.username}</th>`)}
-            </tr>
-            ${candidates.map(
-            (candidate) => html`
-                <tr>
-                  <th>${candidate.candidateName}</th>
-                  ${users.map((user) => {
-              const availability = availabilityMapMap
-                .get(user.userId)
-                .get(candidate.candidateId);
-              const availabilityLabels = ['欠', '？', '出'];
-              const label = availabilityLabels[availability];
-              return html`
-                      <td>
-                        ${user.isSelf
-                  ? html`<button
-                              data-schedule-id="${schedule.scheduleId}"
-                              data-user-id="${user.userId}"
-                              data-candidate-id="${candidate.candidateId}"
-                              data-availability="${availability}"
-                              class="availability-toggle-button btn btn-lg ${buttonStyles[
-                    availability
-                    ]}"
-                            >
-                              ${label}
-                            </button>`
-                  : html`<h3>${label}</h3>`}
-                      </td>
-                    `;
+  return c.html(layout(c, `テーマ: ${schedule.scheduleName}`, html`
+    <div class="card my-3"><h4 class="card-header">${schedule.scheduleName}</h4><div class="card-body"><p style="white-space: pre;">${schedule.memo}</p></div><div class="card-footer">作成者: ${schedule.user.username}</div></div>
+    ${isMine(user.id, schedule) ? html`<a href="/schedules/${schedule.scheduleId}/edit" class="btn btn-primary">編集する</a>` : ''}
+    
+    <table class="table table-bordered my-3" style="table-layout: fixed; width: 100%;">
+      <colgroup>
+        <col style="width: 40%;" />
+        ${users.map(() => html`<col style="width: ${60 / users.length}%;" />`)}
+      </colgroup>
+      
+      <thead>
+        <tr>
+          <th>
+            スポット
+          </th>
+          ${users.map((u) => html`
+            <th>
+              ${u.username}
+              <span class="text-muted fw-normal ms-1" style="font-size: 0.8rem;">
+              （クリックで「❓」➔「🔥 行きたい」➔「⭐ 行ったことある」の切替できます）
+            </span>
+            </th>`)}
+        </tr>
+      </thead>
+      
+      <tbody>
+        ${candidates.map((cand) => html`
+          <tr>
+            <td style="word-wrap: break-word; overflow-wrap: break-word; vertical-align: middle;">
+              <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+                <span class="fw-bold">${cand.candidateName}</span>
+                ${cand.url ? html`<a href="${cand.url}" target="_blank" class="btn btn-sm btn-outline-primary text-nowrap">📍マップ</a>` : ''}
+              </div>
+            </td>
+            ${users.map((u) => {
+              const avail = availabilityMapMap.get(u.userId)?.get(cand.candidateId) ?? 0;
+              return html`<td class="text-center" style="vertical-align: middle;">
+                ${u.isSelf 
+                  ? html`<button data-schedule-id="${schedule.scheduleId}" data-user-id="${u.userId}" data-candidate-id="${cand.candidateId}" data-availability="${avail}" class="availability-toggle-button btn btn-sm ${buttonStyles[avail]} px-3 text-nowrap shadow-sm">${labels[avail]}</button>`
+                  : html`<span class="fs-4">${labels[avail]}</span>`}
+              </td>`;
             })}
-                </tr>
-              `,
-          )}
-            <tr>
-              <th>コメント</th>
-              ${users.map((user) => {
-            const comment = commentMap.get(user.userId);
-            return html`
-                  <td>
-                    <p>
-                      <small id="${user.isSelf ? "self-comment" : ""}">
-                        ${comment}
-                      </small>
-                    </p>
-                    ${user.isSelf
-                ? html`
-                          <button
-                            data-schedule-id="${schedule.scheduleId}"
-                            data-user-id="${user.userId}"
-                            id="self-comment-button"
-                            class="btn btn-info"
-                          >
-                            編集
-                          </button>
-                        `
-                : ''}
-                  </td>
-                `;
-          })}
-            </tr>
-          </table>
-        </div>
-      `,
-    ),
-  );
-});
+          </tr>
+        `)}
+        </tbody>
+    </table>
 
-function isMine(userId, schedule) {
-  return schedule && parseInt(schedule.createdBy, 10) === parseInt(userId, 10);
-}
+    <div class="card border border-light-subtle rounded-3 shadow-sm p-4 mt-4 bg-white">
+      <h5 class="fw-bold mb-3" style="color: #d97706 !important;">
+        新しいお店（候補）を追加する
+      </h5>
+      <form method="post" action="/schedules/${schedule.scheduleId}/candidates">
+        <div class="input-group">
+          <input
+            type="text"
+            name="candidateName"
+            class="form-control form-control-lg"
+            placeholder="例：〇〇イタリアン、https://maps... （「,」か「、」を挟んで入力）"
+            required
+          >
+          <button class="btn fw-bold px-4 text-white" type="submit" style="background-color: #f59e0b !important; border-color: #f59e0b !important;">
+            ＋ 追加する
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card border border-light-subtle rounded-3 shadow-sm p-4 mt-4 bg-white">
+      <h5 class="fw-bold mb-3" style="color: #0284c7 !important;">
+        チャット掲示板
+      </h5>
+      
+      <div class="mb-4" style="max-height: 350px; overflow-y: auto;">
+        ${comments.length > 0 ? html`
+          <div class="d-flex flex-column gap-2">
+            ${comments.map((c) => html`
+              <div class="p-3 rounded-3 bg-light border-start border-4 border-info shadow-sm">
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                  <span class="fw-bold text-dark">👤 ${c.user.username}</span>
+                  <small class="text-muted">${new Date(c.createdAt).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</small>
+                </div>
+                <p class="mb-0 text-break" style="white-space: pre-wrap;">${c.comment}</p>
+              </div>
+            `)}
+          </div>
+        ` : html`
+          <p class="text-muted mb-0">まだメッセージはありません。</p>
+        `}
+      </div>
+
+      <form method="post" action="/schedules/${schedule.scheduleId}/comments">
+        <div class="input-group">
+          <input
+            type="text"
+            name="comment"
+            class="form-control form-control-lg"
+            placeholder="例：ここのイタリアン、駐車場もあるみたいで良さそう！（メッセージを入力）"
+            required
+          >
+          <button class="btn fw-bold px-4 text-white" type="submit" style="background-color: #0284c7 !important; border-color: #0284c7 !important;">
+            送信
+          </button>
+        </div>
+      </form>
+    </div>
+  `));
+});
 
 app.get('/:scheduleId/edit', scheduleIdValidator, async (c) => {
   const { user } = c.get('session') ?? {};
-  const schedule = await prisma.schedule.findUnique({
-  where: { scheduleId: c.req.valid('param').scheduleId },
-  });
-  if (!isMine(user.id, schedule)) {
-    return c.notFound();
-  }
-
-  const candidates = await prisma.candidate.findMany({
-    where: { scheduleId: schedule.scheduleId },
-    orderBy: { candidateId: 'asc' },
-  });
-
-  return c.html(
-    layout(
-      c,
-      `予定の編集: ${schedule.scheduleName}`,
-      html`
-        <form
-          class="my-3"
-          method="post"
-          action="/schedules/${schedule.scheduleId}/update"
-        >
-          <div class="mb-3">
-            <label class="form-label">予定名</label>
-            <input
-              type="text"
-              name="scheduleName"
-              class="form-control"
-              value="${schedule.scheduleName}"
-            />
-          </div>
-          <div class="mb-3">
-            <label class="form-label">メモ</label>
-            <textarea name="memo" class="form-control">${schedule.memo}</textarea>
-          </div>
-          <div class="mb-3">
-            <label class="form-label">既存の候補日程</label>
-            <ul class="list-group mb-2">
-              ${candidates.map(
-        (candidate) =>
-          html`<li class="list-group-item">${candidate.candidateName}</li>`,
-      )}
-            </ul>
-            <p>候補日程の追加 (改行して複数入力してください)</p>
-            <textarea name="candidates" class="form-control"></textarea>
-          </div>
-          <button type="submit" class="btn btn-primary">
-            以上の内容で予定を編集する <i class="bi bi-pencil"></i>
-          </button>
-        </form>
-        <h3 class="my-3">危険な変更</h3>
-        <form method="post" action="/schedules/${schedule.scheduleId}/delete">
-          <button type="submit" class="btn btn-danger">
-            この予定を削除する <i class="bi bi-trash"></i>
-          </button>
-        </form>
-      `,
-    ),
-  );
+  const schedule = await prisma.schedule.findUnique({ where: { scheduleId: c.req.valid('param').scheduleId } });
+  if (!isMine(user.id, schedule)) return c.notFound();
+  const candidates = await prisma.candidate.findMany({ where: { scheduleId: schedule.scheduleId }, orderBy: { candidateId: 'asc' } });
+  return c.html(layout(c, `編集`, html`
+    <form method="post" action="/schedules/${schedule.scheduleId}/update">
+      <div class="mb-3"><label>テーマ名</label><input type="text" name="scheduleName" value="${schedule.scheduleName}" class="form-control" /></div>
+      <div class="mb-3"><label>メモ</label><textarea name="memo" class="form-control">${schedule.memo}</textarea></div>
+      <div class="mb-3">
+        <label>候補スポット（店名, 共有リンクURL）</label>
+        <textarea name="candidates" class="form-control" rows="5" placeholder="例：〇〇イタリアン、https://maps...&#13;※複数ある場合は1行に1店ずつ改行して入力してください">${candidates.map((c) => `${c.candidateName}${c.url ? `, ${c.url}` : ''}`).join('\n')}</textarea></div>
+      <button type="submit" class="btn btn-primary">更新</button>
+    </form>
+    <form method="post" action="/schedules/${schedule.scheduleId}/delete" class="mt-3"><button class="btn btn-danger">削除</button></form>
+  `));
 });
 
 app.post('/:scheduleId/update', scheduleIdValidator, scheduleFormValidator, async (c) => {
-  const { user } = c.get('session') ?? {};
-  const schedule = await prisma.schedule.findUnique({
-  where: { scheduleId: c.req.valid('param').scheduleId },
-  });
-  if (!isMine(user.id, schedule)) {
-    return c.notFound();
-  }
-
   const body = c.req.valid('form');
-  const updatedSchedule = await prisma.schedule.update({
-    where: { scheduleId: schedule.scheduleId },
-    data: {
-      scheduleName: body.scheduleName.slice(0, 255) || '（名称未設定）',
-      memo: body.memo,
-      updatedAt: new Date(),
-    },
-  });
-
-  // 候補が追加されているかチェック
-  const candidateNames = parseCandidateNames(body.candidates);
-  if (candidateNames.length) {
-    await createCandidates(candidateNames, updatedSchedule.scheduleId);
-  }
-
-  return c.redirect('/schedules/' + updatedSchedule.scheduleId);
+  const scheduleId = c.req.valid('param').scheduleId;
+  await prisma.schedule.update({ where: { scheduleId }, data: { scheduleName: body.scheduleName, memo: body.memo, updatedAt: new Date() } });
+  await prisma.candidate.deleteMany({ where: { scheduleId } });
+  const candidates = parseCandidateNames(body.candidates);
+  if (candidates.length) await createCandidates(candidates, scheduleId);
+  return c.redirect('/schedules/' + scheduleId);
 });
 
-async function deleteScheduleAggregate(scheduleId) {
+app.post('/:scheduleId/delete', scheduleIdValidator, async (c) => {
+  const scheduleId = c.req.valid('param').scheduleId;
   await prisma.availability.deleteMany({ where: { scheduleId } });
   await prisma.candidate.deleteMany({ where: { scheduleId } });
   await prisma.comment.deleteMany({ where: { scheduleId } });
   await prisma.schedule.delete({ where: { scheduleId } });
-}
-app.deleteScheduleAggregate = deleteScheduleAggregate;
+  return c.redirect('/');
+});
 
-app.post('/:scheduleId/delete', scheduleIdValidator, async (c) => {
-  const { user } = c.get('session') ?? {};
-  const schedule = await prisma.schedule.findUnique({
-  where: { scheduleId: c.req.valid('param').scheduleId },
-  });
-  if (!isMine(user.id, schedule)) {
-    return c.notFound();
+// 新しいお店を追加保存
+app.post('/:scheduleId/candidates', scheduleIdValidator, async (c) => {
+  const scheduleId = c.req.valid('param').scheduleId;
+  const body = await c.req.parseBody();
+  const candidateNameInput = body.candidateName || '';
+
+  const candidateNames = parseCandidateNames(candidateNameInput);
+  
+  if (candidateNames.length > 0) {
+    await createCandidates(candidateNames, scheduleId);
   }
 
-  await deleteScheduleAggregate(schedule.scheduleId);
-  return c.redirect('/');
+  return c.redirect('/schedules/' + scheduleId);
+});
+
+// 新しいチャットメッセージを保存
+app.post('/:scheduleId/comments', scheduleIdValidator, async (c) => {
+  const { user } = c.get('session') ?? {};
+  const scheduleId = c.req.valid('param').scheduleId;
+  const body = await c.req.parseBody();
+  const commentText = body.comment || '';
+
+  if (commentText.trim() !== '') {
+    await prisma.comment.create({
+      data: {
+        scheduleId: scheduleId,
+        userId: parseInt(user.id, 10),
+        comment: commentText
+      }
+    });
+  }
+
+  return c.redirect('/schedules/' + scheduleId);
 });
 
 module.exports = app;

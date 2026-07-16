@@ -1,7 +1,7 @@
 {
   "name": "spot-explorer",
   "version": "1.0.0",
-  "description": "グルメ＆スポット開拓アプリ",
+  "description": "グルメ＆スポット発見アプリ",
   "main": "src/app.js",
   "author": "shin",
   "license": "MIT",

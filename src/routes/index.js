@@ -15,18 +15,16 @@ const app = new Hono();
 
 function scheduleTable(schedules) {
   return html`
-    <table class="table>
+    <table class="table table-hover align-middle" style="border-color: #e2e8f0 !important;">
       <tr>
-        <th>予定名</th>
+        <th>テーマ名</th>
         <th>更新日時</th>
       </tr>
       ${schedules.map(
         (schedule) => html`
           <tr>
             <td>
-              <a href="/schedules/${schedule.scheduleId}">
-                ${schedule.scheduleName}
-              </a>
+              <a class="text-decoration-none fw-bold" style="color: #f59e0b !important;" href="/schedules/${schedule.scheduleId}">${schedule.scheduleName}</a>
             </td>
             <td>${schedule.formattedUpdatedAt}</td>
           </tr>
@@ -40,7 +38,6 @@ app.get('/', async (c) => {
   const { user } = c.get('session') ?? {};
   const schedules = user
     ? await prisma.schedule.findMany({
-        where: { createdBy: user.id },
         orderBy: { updatedAt: 'desc' },
       })
     : [];
@@ -53,26 +50,26 @@ app.get('/', async (c) => {
       c,
       null,
       html`
-        <div class="my-3">
-          <div class="p-5 bg-light rounded-3">
-            <h1 class="text-body">予定調整くん</h1>
+        <div class="my-4">
+          <div class="p-5 rounded-4 shadow-sm border-0" style="background-color: #fff5e6;">
+            <h1 class="text-body">グルメ＆スポットアプリ</h1>
             <p class="lead">
-              予定調整くんは、GitHubで認証でき、予定を作って出欠が取れるサービスです。
+              グルメ＆スポットアプリは、GitHubで認証でき、休日の行き先や隠れた名店をみんなで共有・開拓できるサービスです。
             </p>
           </div>
         </div>
         ${user
           ? html`
-              <div class="my-3">
-                <h3 class="my-3">予定を作る</h3>
-                <a class="btn btn-primary" href="/schedules/new">予定を作る</a>
-                ${schedules.length > 0
-                  ? html`
-                      <h3 class="my-3">あなたの作った予定一覧</h3>
-                      ${scheduleTable(schedules)}
-                    `
-                  : ''}
+              <div class="my-4">
+                <a class="btn btn-primary" href="/schedules/new">テーマを作る</a>
               </div>
+
+              ${schedules.length > 0
+                ? html`
+                    <h3 class="my-3">みんなの開拓テーマ一覧</h3>
+                    ${scheduleTable(schedules)}
+                  `
+                : html`<p class="my-3 text-muted fs-5 py-5 my-3">まだ開拓テーマがありません！<br>みんなで最初のテーマを作りましょう</p>`}
             `
           : ''}
       `,

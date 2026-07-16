@@ -40,6 +40,7 @@ model Schedule {
 model Candidate {
   candidateId    Int            @id @default(autoincrement())
   candidateName  String         @db.VarChar(255)
+  url            String?
   scheduleId     String         @db.Uuid
   schedule       Schedule       @relation(fields: [scheduleId], references: [scheduleId], onDelete: Cascade)
   availabilities Availability[]
@@ -62,12 +63,17 @@ model Availability {
 }
 
 model Comment {
+  // コメント1つずつに背番号（自動連番のID）を持たせる！
+  commentId  Int      @id @default(autoincrement())
+  
   scheduleId String   @db.Uuid
   userId     Int
   comment    String   @db.VarChar(255)
+  
+  // コメントした日時を自動で記録する（時系列で並べるため！）
+  createdAt  DateTime @default(now())
+
   user       User     @relation(fields: [userId], references: [userId], onDelete: Cascade)
   schedule   Schedule @relation(fields: [scheduleId], references: [scheduleId], onDelete: Cascade)
-
-  @@id([scheduleId, userId], name: "commentCompositeId")
   @@map(name: "comments")
 }
